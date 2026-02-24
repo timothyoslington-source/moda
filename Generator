@@ -1,0 +1,266 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Essay Question Generator</title>
+
+  <style>
+    :root{
+      --bg: #fffff0;
+      --ink: #111;
+      --box: #ffffff;
+      --border: #d9d9c8;
+    }
+    html, body { height: 100%; }
+    body{
+      margin:0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: "Times New Roman", Times, serif;
+    }
+    .wrap{
+      max-width: 900px;
+      margin: 0 auto;
+      padding: 32px 18px 24px;
+      box-sizing: border-box;
+    }
+    h1{
+      margin: 0 0 18px 0;
+      font-size: 22px;
+      font-weight: 700;
+    }
+    .panel{
+      border: 1px solid var(--border);
+      background: rgba(255,255,255,0.35);
+      padding: 18px 18px 14px;
+      border-radius: 10px;
+    }
+    .label{
+      font-size: 14px;
+      letter-spacing: 0.02em;
+      margin: 0 0 8px 0;
+      font-weight: 700;
+    }
+    .extract{
+      white-space: pre-wrap;
+      line-height: 1.45;
+      font-size: 18px;
+      margin: 0 0 18px 0;
+    }
+    .qbox{
+      background: var(--box);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 14px 14px;
+    }
+    .question{
+      white-space: pre-wrap;
+      line-height: 1.45;
+      font-size: 18px;
+      margin: 0;
+    }
+    .buttons{
+      display:flex;
+      gap: 10px;
+      margin-top: 18px;
+      justify-content: flex-end;
+      flex-wrap: wrap;
+    }
+    button{
+      font-family: "Times New Roman", Times, serif;
+      font-size: 16px;
+      padding: 10px 14px;
+      border-radius: 10px;
+      border: 1px solid #444;
+      background: #fff;
+      cursor: pointer;
+    }
+    button:disabled{
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+    .status{
+      margin-top: 10px;
+      font-size: 14px;
+      color: #333;
+      min-height: 18px;
+    }
+  </style>
+
+  <!-- jsPDF (for client-side A4 PDF export) -->
+  <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
+</head>
+
+<body>
+  <div class="wrap">
+    <h1>Essay Question Generator</h1>
+
+    <div class="panel">
+      <div class="label">Extract</div>
+      <div id="extract" class="extract">Loading…</div>
+
+      <div class="label">Question</div>
+      <div class="qbox">
+        <p id="question" class="question"></p>
+      </div>
+
+      <div class="buttons">
+        <button id="newBtn" type="button">NEW QUESTION</button>
+        <button id="pdfBtn" type="button">DOWNLOAD AS PDF</button>
+      </div>
+
+      <div id="status" class="status"></div>
+    </div>
+  </div>
+
+  <script>
+    // Data source (OpenSheet JSON)
+    const SHEET_URL = "https://opensheet.elk.sh/1WiMSRCpR_7TlsMm4buNAjAtJGL1fsD73dCpEl3LKlic/Sheet1";
+
+    let rows = [];
+    let extractKey = null;
+    let questionKey = null;
+
+    let currentExtract = "";
+    let currentQuestion = "";
+
+    const elExtract = document.getElementById("extract");
+    const elQuestion = document.getElementById("question");
+    const elStatus = document.getElementById("status");
+    const newBtn = document.getElementById("newBtn");
+    const pdfBtn = document.getElementById("pdfBtn");
+
+    function setStatus(msg) {
+      elStatus.textContent = msg || "";
+    }
+
+    function normaliseText(s) {
+      if (s == null) return "";
+      return String(s).replace(/\r\n/g, "\n").trim();
+    }
+
+    function pickRandomNonEmptyText(key) {
+      // Try a few times to avoid blank cells; then fall back to any row.
+      for (let i = 0; i < 30; i++) {
+        const r = rows[Math.floor(Math.random() * rows.length)];
+        const t = normaliseText(r[key]);
+        if (t) return t;
+      }
+      const r = rows[Math.floor(Math.random() * rows.length)];
+      return normaliseText(r[key]);
+    }
+
+    function render() {
+      elExtract.textContent = currentExtract || "No extract available.";
+      elQuestion.textContent = currentQuestion || "No question available.";
+    }
+
+    function newQuestion() {
+      if (!rows.length || !extractKey || !questionKey) return;
+
+      currentExtract = pickRandomNonEmptyText(extractKey);
+      currentQuestion = pickRandomNonEmptyText(questionKey);
+
+      render();
+      setStatus("");
+    }
+
+    async function loadData() {
+      setStatus("Loading data…");
+      newBtn.disabled = true;
+      pdfBtn.disabled = true;
+
+      const res = await fetch(SHEET_URL, { cache: "no-store" });
+      if (!res.ok) throw new Error("Failed to load the spreadsheet data.");
+
+      const data = await res.json();
+      if (!Array.isArray(data) || data.length === 0) throw new Error("No rows found in the spreadsheet.");
+
+      rows = data;
+
+      // The OpenSheet JSON uses column headers as object keys.
+      // We take the first key as the left-hand (extract) column and the second as the right-hand (question) column.
+      const keys = Object.keys(rows[0] || {});
+      if (keys.length < 2) throw new Error("The sheet needs at least two columns (extract and question).");
+
+      extractKey = keys[0];
+      questionKey = keys[1];
+
+      newBtn.disabled = false;
+      pdfBtn.disabled = false;
+
+      setStatus("");
+      newQuestion();
+    }
+
+    function downloadPDF() {
+      const { jsPDF } = window.jspdf;
+      const doc = new jsPDF({ unit: "mm", format: "a4" });
+
+      // Page geometry
+      const pageW = doc.internal.pageSize.getWidth();
+      const pageH = doc.internal.pageSize.getHeight();
+      const margin = 18;
+      const innerW = pageW - margin * 2;
+
+      // Fonts (Times is built-in)
+      doc.setFont("times", "normal");
+
+      // Title
+      doc.setFontSize(14);
+      doc.text("Extract", margin, 18);
+
+      // Extract text
+      doc.setFontSize(12);
+      const extractLines = doc.splitTextToSize(currentExtract || "", innerW);
+      let y = 26;
+      doc.text(extractLines, margin, y);
+
+      // Compute Y after extract
+      y += (extractLines.length * 5.2) + 8;
+
+      // Question label
+      doc.setFontSize(14);
+      doc.text("Question", margin, y);
+      y += 8;
+
+      // Question box
+      const boxX = margin;
+      const boxY = y;
+      const boxW = innerW;
+      const boxH = Math.max(40, pageH - boxY - margin); // fill remaining space neatly
+
+      doc.setLineWidth(0.4);
+      doc.rect(boxX, boxY, boxW, boxH);
+
+      // Question text inside box
+      doc.setFontSize(12);
+      const qPad = 6;
+      const qLines = doc.splitTextToSize(currentQuestion || "", boxW - (qPad * 2));
+      const qTextY = boxY + qPad + 4;
+
+      // Avoid overflow: if too long, truncate to fit roughly.
+      const maxLines = Math.floor((boxH - (qPad * 2)) / 5.2);
+      const safeLines = qLines.slice(0, Math.max(1, maxLines));
+
+      doc.text(safeLines, boxX + qPad, qTextY);
+
+      doc.save("essay-question.pdf");
+    }
+
+    // Events
+    newBtn.addEventListener("click", newQuestion);
+    pdfBtn.addEventListener("click", downloadPDF);
+
+    // Generate a question on each page load (and therefore on refresh)
+    loadData().catch(err => {
+      setStatus(err.message || "Something went wrong.");
+      elExtract.textContent = "Unable to load extract.";
+      elQuestion.textContent = "Unable to load question.";
+      newBtn.disabled = true;
+      pdfBtn.disabled = true;
+    });
+  </script>
+</body>
+</html>
